@@ -1,0 +1,56 @@
+#use cut adapt to remove primers
+
+for i in *_R1_001.fastq.gz; 
+do cutadapt -a TGGCGGCGTGCCTAACA -o ./trimmed/${i} ${i}; 
+done
+
+for i in *_R2_001.fastq.gz; 
+do cutadapt -a GTATTAGCTAACCTTTCGGCTA -o ./trimmed/${i} ${i}; 
+done
+
+#use flash2 to merge R1 and R2 reads
+
+for i in *_R1_001.fastq.gz; do echo $i; flash2 --min-overlap=30 --max-overlap=250 `echo $i` `echo $i|sed 's/R1_001/R2_001/'` -o `echo $i|sed 's/R1_001.fastq.gz/Stitched/'`> `echo $i|sed 's/R1_001.fastq.gz/.log/'`;done
+
+#use seqtk to convert fastq into fasta 
+
+for i in *.fastq;
+do
+echo $i;
+seqtk seq -A $i > `echo $i | sed 's/fastq/fasta/'`;
+done
+
+#command to reformat sequence headers to make it readable for QIIME, UPARSE and MOTHUR
+
+for file in `ls -1 *.fasta`
+do
+echo working on $file
+VAR1=`echo $file | cut -d "." -f 1`
+echo VAR1 is $VAR1
+`perl -pi -e 's/\>/\>sample='$VAR1';_/' $file;` 
+done
+
+#concatenate all files then use MOTHUR to screen sequences
+
+cat *fasta > all_samples.fasta
+
+summary.seqs(fasta=all_samples.fasta,processors=6)
+
+screen.seqs(fasta=current,minlength=X,maxlength=X,maxambig=0,maxhomop=8,processors=6)
+summary.seqs()
+
+#use USEARCH (64-bit) to dereplicate and cluster into zOTUs and create abundance table
+
+usearch -fastx_uniques all_samples.good.fasta -fastaout all_samples.good_unique.fasta -sizeout
+
+usearch -sortbysize all_samples.good_unique.fasta -fastaout all_samples.good_unique_sorted.fasta -minsize 2
+
+usearch -unoise3 all_samples.good_unique_sorted.fasta -zotus all_samples.good_unique_zotus.fasta -ampout all_samples.good_unique_ampout.fasta -tabbedout all_samples.good_unique_unoise3.txt -minsize 8
+
+usearch -otutab all_samples.fasta -zotus all_samples.good_unique_zotus.fasta -otutabout all_samples.good_unique_zotus_otutab.txt -dbmatched zotus_matched_sized.fasta -sizeout -maxaccepts 8 -maxrejects 256
+
+seqtk seq -S all_samples.good_unique_zotus.fasta > all_samples.good_unique_zotus_unwrapped.fasta
+
+#use MOTHUR to assign taxonomy with desired database 
+
+classify.seqs(fasta=all_samples.good_unique_zotus_unwrapped.fasta, reference=db.align, taxonomy=db.tax, cutoff=60, probs=FALSE)
